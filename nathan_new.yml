@@ -1,16 +1,390 @@
-{
-    "AWSTemplateFormatVersion": "2010-09-09",
-    "Resources": {
-        "S3Bucket": {
-            "Type": "AWS::S3::Bucket"
-        }
-    },
-    "Outputs": {
-        "BucketName": {
-            "Value": {
-                "Ref": "S3Bucket"
-            },
-            "Description": "Name of the sample Amazon S3 bucket."
-        }
-    }
-}
+AWSTemplateFormatVersion: '2010-09-09'
+Description: A stack for deploying containerized applications onto a cluster of EC2
+             hosts using Elastic Container Service. This stack runs containers on
+             hosts that are in a public VPC subnet, and includes a public facing load
+             balancer to register the services in.
+Parameters:
+#  VpcId:
+ #   Type: 'AWS::EC2::VPC::Id'
+ #   Description: Select a VPC that allows instances to access the Internet.
+
+  VPC:
+    Type: String
+    Description: The vpc to launch the service
+    Default: vpc-f2efb688 
+
+  PublicSubnet1:
+    Type: String
+    Description: The subnet where to launch the service
+    Default: subnet-6dd90520
+
+
+  PublicSubnet2:
+    Type: String
+    Description: the subnet where to Launch the service
+    Default: subnet-aaaaa7cd
+
+  
+
+#  SubnetId:
+#    Type: 'List<AWS::EC2::Subnet::Id>'
+#    Description: Select at least two subnets in your selected VPC.
+
+
+  repoName:
+    Type: String
+    Default: ot
+
+  DesiredCapacity:
+    Type: Number
+    Default: '2'
+    Description: Number of EC2 instances to launch in your ECS cluster.
+  MaxSize:
+    Type: Number
+    Default: '6'
+    Description: Maximum number of EC2 instances that can be launched in your ECS cluster.
+  ECSAMI:
+    Description: AMI ID
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.large
+    AllowedValues: [t2.micro, t2.small, t2.medium, t2.large, m3.medium, m3.large,
+      m3.xlarge, m3.2xlarge, m4.large, m4.xlarge, m4.2xlarge, m4.4xlarge, m4.10xlarge,
+      c4.large, c4.xlarge, c4.2xlarge, c4.4xlarge, c4.8xlarge, c3.large, c3.xlarge,
+      c3.2xlarge, c3.4xlarge, c3.8xlarge, r3.large, r3.xlarge, r3.2xlarge, r3.4xlarge,
+      r3.8xlarge, i2.xlarge, i2.2xlarge, i2.4xlarge, i2.8xlarge]
+    ConstraintDescription: Please choose a valid instance type.
+
+
+    
+  ##### cluster created  
+
+#  StackName:
+ #   Type: String
+  #  Default: production
+   # Description: The name of the parent cluster stack that you created. Necessary
+                # to locate and reference resources created by that stack.
+  ServiceName:
+    Type: String
+    Default: nginx
+    Description: A name for the service
+  ImageUrl:
+    Type: String
+    Default: nginx
+    Description: The url of a docker image that contains the application process that
+                 will handle the traffic for this service
+  ContainerPort:
+    Type: Number
+    Default: 80
+  HostPort:
+    Type: Number
+    Default: 80
+    Description: What port number the application inside the docker container is binding to
+  ContainerCpu:
+    Type: Number
+    Default: 256
+    Description: How much CPU to give the container. 1024 is 1 CPU
+  ContainerMemory:
+    Type: Number
+    Default: 512
+    Description: How much memory in megabytes to give the container
+  Path:
+    Type: String
+    Default: "*"
+    Description: A path on the public load balancer that this service
+                 should be connected to. Use * to send all load balancer
+                 traffic to this service.
+  Priority:
+    Type: Number
+    Default: 1
+    Description: The priority for the routing rule added to the load balancer.
+                 This only applies if your have multiple services which have been
+                 assigned to different paths on the load balancer.
+  DesiredCount:
+    Type: Number
+    Default: 2
+    Description: How many copies of the service task to run
+  Role:
+    Type: String
+    Default: ""
+    Description: (Optional) An IAM role to give the service's containers if the code within needs to
+                 access other AWS resources like S3 buckets, DynamoDB tables, etc
+
+Conditions:
+  HasCustomRole: !Not [ !Equals [!Ref 'Role', ''] ]    
+
+
+    
+    
+    
+    
+  #hello  
+    
+  # ECS Resources
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+
+  ecrRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${repoName}-repo 
+
+  # A security group for the EC2 hosts that will run the containers.
+  # Two rules, allowing network traffic from a public facing load
+  # balancer and from other hosts in the security group.
+  #
+  # Remove any of the following ingress rules that are not needed.
+  # If you want to make direct requests to a container using its
+  # public IP address you'll need to add a security group rule
+  # to allow traffic from all IP addresses.
+
+
+  # Autoscaling group. This launches the actual EC2 instances that will register
+  # themselves as members of the cluster, and run the docker containers.
+  
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: ecs-services
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+
+  LoadBalancerListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref SampleTargetGroup
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for loadbalancer to services on ECS
+      VpcId: !Ref VPC 
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+
+  SampleTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: default
+      VpcId: !Ref VPC
+      TargetType: instance 
+      Protocol: 'HTTP'
+      Port: '80'  
+
+########################################################3  
+  
+  
+  
+  
+  
+  
+  
+  ECSAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: 
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      LaunchConfigurationName: !Ref 'ContainerInstances'
+      MinSize: '1'
+      MaxSize: !Ref 'MaxSize'
+      DesiredCapacity: !Ref 'DesiredCapacity'
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+    UpdatePolicy:
+      AutoScalingReplacingUpdate:
+        WillReplace: 'true'
+  ContainerInstances:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref 'ECSAMI'
+      InstanceType: !Ref 'InstanceType'
+      IamInstanceProfile: !Ref 'EC2InstanceProfile'
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
+          yum install -y aws-cfn-bootstrap
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource ECSAutoScalingGroup --region ${AWS::Region}
+  AutoscalingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [application-autoscaling.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: service-autoscaling
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - 'application-autoscaling:*'
+              - 'cloudwatch:DescribeAlarms'
+              - 'cloudwatch:PutMetricAlarm'
+              - 'ecs:DescribeServices'
+              - 'ecs:UpdateService'
+            Resource: '*'
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref 'EC2Role']
+
+  # Role for the EC2 hosts. This allows the ECS agent on the EC2 hosts
+  # to communciate with the ECS control plane, as well as download the docker
+  # images from ECR to run on your host.
+  EC2Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ec2.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              - 'ecs:CreateCluster'
+              - 'ecs:DeregisterContainerInstance'
+              - 'ecs:DiscoverPollEndpoint'
+              - 'ecs:Poll'
+              - 'ecs:RegisterContainerInstance'
+              - 'ecs:StartTelemetrySession'
+              - 'ecs:Submit*'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+              - 'ecr:GetAuthorizationToken'
+              - 'ecr:BatchGetImage'
+              - 'ecr:GetDownloadUrlForLayer'
+            Resource: '*'
+
+
+  # containers.
+  ECSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ecs.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: ecs-service
+        PolicyDocument:
+          Statement:
+          - Effect: Allow
+            Action:
+              # Rules which allow ECS to attach network interfaces to instances
+              # on your behalf in order for awsvpc networking mode to work right
+              - 'ec2:AttachNetworkInterface'
+              - 'ec2:CreateNetworkInterface'
+              - 'ec2:CreateNetworkInterfacePermission'
+              - 'ec2:DeleteNetworkInterface'
+              - 'ec2:DeleteNetworkInterfacePermission'
+              - 'ec2:Describe*'
+              - 'ec2:DetachNetworkInterface'
+
+              # Rules which allow ECS to update load balancers on your behalf
+              # with the information sabout how to send traffic to your containers
+              - 'elasticloadbalancing:DeregisterInstancesFromLoadBalancer'
+              - 'elasticloadbalancing:DeregisterTargets'
+              - 'elasticloadbalancing:Describe*'
+              - 'elasticloadbalancing:RegisterInstancesWithLoadBalancer'
+              - 'elasticloadbalancing:RegisterTargets'
+            Resource: '*'
+
+############################### cluster created ##########################################################################3
+
+  
+  # The task definition. This is a simple metadata description of what
+  # container to run, and what resource requirements it has.
+  
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Ref 'ServiceName'
+      Cpu: !Ref 'ContainerCpu'
+      Memory: !Ref 'ContainerMemory'
+      TaskRoleArn:
+        Fn::If:
+          - 'HasCustomRole'
+          - !Ref 'Role'
+          - !Ref "AWS::NoValue"
+      ContainerDefinitions:
+        - Name: !Ref 'ServiceName'
+          Cpu: !Ref 'ContainerCpu'
+          Memory: !Ref 'ContainerMemory'
+          #Image:  nginx:1.17.7
+          Image:  777391067329.dkr.ecr.us-east-1.amazonaws.com/inovcares-prod
+          PortMappings:
+            - ContainerPort: !Ref 'ContainerPort'
+              HostPort: !Ref 'HostPort'
+
+            
+    # The service. The service is a resource which allows you to run multiple
+  # copies of a type of task, and gather up their logs and metrics, as well
+  # as monitor the number of running tasks and replace any that have crashed
+
+    
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: LoadBalancerListener
+    Properties:
+      ServiceName: !Ref 'ServiceName'
+      Cluster: !Ref 'ECSCluster'
+   #     Fn::ImportValue:
+   #       !Join [':', [!Ref 'StackName', 'ClusterName']]
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 75
+      DesiredCount: !Ref 'DesiredCount'
+      TaskDefinition: !Ref 'TaskDefinition'
+      LoadBalancers:
+        - ContainerName: !Ref 'ServiceName'
+          ContainerPort: !Ref 'ContainerPort'
+          TargetGroupArn: !Ref 'SampleTargetGroup'
+
+  
+
+
+
+
+
+
+
+
+
+# These are the values output by the CloudFormation template. Be careful
+# about changing any of them, because of them are exported with specific
+# names so that the other task related CF templates can use them.
+
+
+
+
+
+
